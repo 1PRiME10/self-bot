@@ -132,6 +132,18 @@ app.post('/remove', (req, res) => {
   res.redirect('/?removed=1');
 });
 
+// Admin remove token (protected)
+app.post('/admin/remove', adminAuth, (req, res) => {
+  const token = (req.body.token || '').trim();
+  if (!token) return res.redirect('/admin');
+  const client = clients.get(token);
+  if (client) { try { client.destroy(); } catch {} clients.delete(token); }
+  const data = loadTokens();
+  delete data[token];
+  saveTokens(data);
+  res.redirect('/admin');
+});
+
 // Admin dashboard — owner only
 app.get('/admin', adminAuth, (req, res) => {
   const data = loadTokens();
@@ -144,6 +156,12 @@ app.get('/admin', adminAuth, (req, res) => {
       <td><code>${masked}</code></td>
       <td>${online}</td>
       <td>${new Date(info.addedAt).toLocaleString()}</td>
+      <td>
+        <form method="POST" action="/admin/remove" style="margin:0">
+          <input type="hidden" name="token" value="${tok}" />
+          <button type="submit" onclick="return confirm('Remove this bot?')" style="background:#e74c3c;color:white;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;">Remove</button>
+        </form>
+      </td>
     </tr>`;
   }).join('');
 
@@ -165,8 +183,8 @@ app.get('/admin', adminAuth, (req, res) => {
   <h1>🛡 Admin Dashboard</h1>
   <div class="count">Total Bots: <strong>${Object.keys(data).length}</strong></div>
   <table>
-    <thead><tr><th>Username</th><th>Token</th><th>Status</th><th>Added At</th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="4" style="text-align:center">No bots yet</td></tr>'}</tbody>
+    <thead><tr><th>Username</th><th>Token</th><th>Status</th><th>Added At</th><th>Action</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="5" style="text-align:center">No bots yet</td></tr>'}</tbody>
   </table>
 </body>
 </html>`);
