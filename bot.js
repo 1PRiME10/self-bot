@@ -185,7 +185,19 @@ app.post('/admin/remove', adminAuth, async (req, res) => {
 });
 
 app.get('/admin', adminAuth, async (req, res) => {
-  const data = await loadTokens();
+  const gistData = await loadTokens();
+
+  // Merge Gist data with in-memory clients so nothing is hidden
+  const data = { ...gistData };
+  for (const [tok, client] of clients.entries()) {
+    if (!data[tok]) {
+      data[tok] = {
+        username: client.user?.username || 'Unknown',
+        addedAt: new Date().toISOString()
+      };
+    }
+  }
+
   const rows = Object.entries(data).map(([tok, info]) => {
     const c = clients.get(tok);
     const online = c?.isReady() ? '🟢 Online' : '🔴 Offline';
