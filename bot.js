@@ -108,14 +108,15 @@ app.post('/add', async (req, res) => {
   if (!token) return res.redirect('/?error=Token+is+required');
   if (clients.has(token)) return res.redirect('/?error=Token+already+active');
 
-  const testClient = new Client({ checkUpdate: false });
+  // Validate token via Discord API (no extra client needed)
   try {
-    await testClient.login(token);
-    testClient.destroy();
+    const check = await fetch('https://discord.com/api/v9/users/@me', {
+      headers: { Authorization: token }
+    });
+    if (!check.ok) return res.redirect('/?error=Invalid+token');
     startClient(token);
     res.redirect('/?success=1');
   } catch {
-    try { testClient.destroy(); } catch {}
     res.redirect('/?error=Invalid+token');
   }
 });
