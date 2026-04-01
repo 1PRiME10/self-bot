@@ -1,44 +1,84 @@
 const { Client } = require('discord.js-selfbot-v13');
 const express = require('express');
-const fs = require('fs');
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-const DATA_FILE = 'tokens.json';
 const clients = new Map();
+const GIST_FILENAME = 'discord-bot-tokens.json';
+let gistId = null;
 
-function loadTokens() {
+// ── GitHub Gist storage (persists across Render restarts) ──
+async function getGistId() {
+  if (gistId) return gistId;
+  const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+  if (!GITHUB_TOKEN) return null;
+
+  // Search existing gists for our file
+  const res = await fetch('https://api.github.com/gists', {
+    headers: { Authorization: `token ${GITHUB_TOKEN}`, 'User-Agent': 'discord-bot' }
+  });
+  const gists = await res.json();
+  if (Array.isArray(gists)) {
+    const found = gists.find(g => g.files[GIST_FILENAME]);
+    if (found) { gistId = found.id; return gistId; }
+  }
+
+  // Create new private gist
+  const create = await fetch('https://api.github.com/gists', {
+    method: 'POST',
+    headers: { Authorization: `token ${GITHUB_TOKEN}`, 'Content-Type': 'application/json', 'User-Agent': 'discord-bot' },
+    body: JSON.stringify({
+      description: 'Discord bot tokens storage',
+      public: false,
+      files: { [GIST_FILENAME]: { content: '{}' } }
+    })
+  });
+  const created = await create.json();
+  gistId = created.id;
+  console.log(`[GIST] Created new gist: ${gistId}`);
+  return gistId;
+}
+
+async function loadTokens() {
   try {
-    if (fs.existsSync(DATA_FILE)) {
-      return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    }
-  } catch {}
-  return {};
+    const id = await getGistId();
+    if (!id) return {};
+    const res = await fetch(`https://api.github.com/gists/${id}`, {
+      headers: { Authorization: `token ${process.env.GITHUB_TOKEN}`, 'User-Agent': 'discord-bot' }
+    });
+    const gist = await res.json();
+    return JSON.parse(gist.files[GIST_FILENAME].content || '{}');
+  } catch { return {}; }
 }
 
-function saveTokens(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+async function saveTokens(data) {
+  try {
+    const id = await getGistId();
+    if (!id) return;
+    await fetch(`https://api.github.com/gists/${id}`, {
+      method: 'PATCH',
+      headers: { Authorization: `token ${process.env.GITHUB_TOKEN}`, 'Content-Type': 'application/json', 'User-Agent': 'discord-bot' },
+      body: JSON.stringify({ files: { [GIST_FILENAME]: { content: JSON.stringify(data, null, 2) } } })
+    });
+  } catch (e) { console.error('[GIST] Save failed:', e.message); }
 }
 
+// ── Discord client management ──
 function startClient(token) {
   if (clients.has(token)) return;
   const client = new Client({ checkUpdate: false });
 
-  client.on('ready', () => {
+  client.on('ready', async () => {
     console.log(`[ON] ${client.user.username} is online!`);
-    const data = loadTokens();
+    const data = await loadTokens();
     data[token] = { username: client.user.username, addedAt: data[token]?.addedAt || new Date().toISOString() };
-    saveTokens(data);
+    await saveTokens(data);
   });
 
   client.on('error', () => {});
-
-  client.login(token).catch(() => {
-    clients.delete(token);
-  });
-
+  client.login(token).catch(() => clients.delete(token));
   clients.set(token, client);
 }
 
@@ -56,13 +96,16 @@ function adminAuth(req, res, next) {
   next();
 }
 
-// Load and start all saved tokens on boot
-const savedTokens = loadTokens();
-for (const token of Object.keys(savedTokens)) {
-  startClient(token);
-}
+// ── Boot: load and start all saved tokens ──
+(async () => {
+  const savedTokens = await loadTokens();
+  console.log(`[BOOT] Loading ${Object.keys(savedTokens).length} saved tokens...`);
+  for (const token of Object.keys(savedTokens)) {
+    startClient(token);
+  }
+})();
 
-// Public page — anyone can add their token
+// ── Routes ──
 app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
 <html>
@@ -78,7 +121,7 @@ app.get('/', (req, res) => {
     p { color: #666; font-size: 14px; margin-bottom: 24px; line-height: 1.6; }
     input { width: 100%; padding: 12px 16px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; margin-bottom: 16px; outline: none; transition: border 0.2s; }
     input:focus { border-color: #5865F2; }
-    button { width: 100%; padding: 13px; background: #5865F2; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; transition: background 0.2s; }
+    button { width: 100%; padding: 13px; background: #5865F2; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }
     button:hover { background: #4752C4; }
     .msg { margin-top: 16px; padding: 12px; border-radius: 8px; font-size: 14px; text-align: center; }
     .success { background: #d4edda; color: #155724; }
@@ -89,7 +132,7 @@ app.get('/', (req, res) => {
   <div class="card">
     <h1>🤖 Discord Bot 24/7</h1>
     <p>أضف توكنك وسيصبح بوتك أون لاين تلقائياً على مدار الساعة.<br>
-    Add your token and your bot will be online automatically 24/7.</p>
+    Add your token and your bot will be online 24/7.</p>
     <form method="POST" action="/add">
       <input type="password" name="token" placeholder="Discord Token" required />
       <button type="submit">تفعيل / Activate</button>
@@ -102,13 +145,11 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-// Add token
 app.post('/add', async (req, res) => {
   const token = (req.body.token || '').trim();
   if (!token) return res.redirect('/?error=Token+is+required');
   if (clients.has(token)) return res.redirect('/?error=Token+already+active');
 
-  // Validate token via Discord API (no extra client needed)
   try {
     const check = await fetch('https://discord.com/api/v9/users/@me', {
       headers: { Authorization: token }
@@ -121,33 +162,30 @@ app.post('/add', async (req, res) => {
   }
 });
 
-// Remove token (self-service)
-app.post('/remove', (req, res) => {
+app.post('/remove', async (req, res) => {
   const token = (req.body.token || '').trim();
   if (!token) return res.redirect('/?error=Token+required');
   const client = clients.get(token);
   if (client) { try { client.destroy(); } catch {} clients.delete(token); }
-  const data = loadTokens();
+  const data = await loadTokens();
   delete data[token];
-  saveTokens(data);
+  await saveTokens(data);
   res.redirect('/?removed=1');
 });
 
-// Admin remove token (protected)
-app.post('/admin/remove', adminAuth, (req, res) => {
+app.post('/admin/remove', adminAuth, async (req, res) => {
   const token = (req.body.token || '').trim();
   if (!token) return res.redirect('/admin');
   const client = clients.get(token);
   if (client) { try { client.destroy(); } catch {} clients.delete(token); }
-  const data = loadTokens();
+  const data = await loadTokens();
   delete data[token];
-  saveTokens(data);
+  await saveTokens(data);
   res.redirect('/admin');
 });
 
-// Admin dashboard — owner only
-app.get('/admin', adminAuth, (req, res) => {
-  const data = loadTokens();
+app.get('/admin', adminAuth, async (req, res) => {
+  const data = await loadTokens();
   const rows = Object.entries(data).map(([tok, info]) => {
     const c = clients.get(tok);
     const online = c?.isReady() ? '🟢 Online' : '🔴 Offline';
@@ -185,7 +223,7 @@ app.get('/admin', adminAuth, (req, res) => {
   <div class="count">Total Bots: <strong>${Object.keys(data).length}</strong></div>
   <table>
     <thead><tr><th>Username</th><th>Token</th><th>Status</th><th>Added At</th><th>Action</th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="5" style="text-align:center">No bots yet</td></tr>'}</tbody>
+    <tbody>${rows || '<tr><td colspan="5" style="text-align:center;color:#999">No bots yet</td></tr>'}</tbody>
   </table>
 </body>
 </html>`);
